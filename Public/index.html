@@ -253,6 +253,9 @@ html,body{
     <!-- ── SIGN IN VIEW ── -->
     <div class="view active" id="view-login">
       <div class="alert" id="login-alert"></div>
+      <div id="resend-row" style="display:none;text-align:center;margin-bottom:10px;font-size:13px;color:var(--text2)">
+        <a href="#" onclick="doResendVerification();return false" style="color:var(--accent);font-weight:600">Resend verification email</a>
+      </div>
 
       <div class="social-btns">
         <button class="soc" onclick="socialLogin('Google')">
@@ -381,6 +384,9 @@ html,body{
 
     <!-- ── LOGGED IN VIEW ── -->
     <div class="view" id="view-home">
+      <div id="verify-banner" style="display:none;background:rgba(234,179,8,0.1);border:1px solid rgba(234,179,8,0.3);color:#854d0e;border-radius:10px;padding:11px 16px;font-size:13px;font-weight:500;margin-bottom:16px;text-align:center;">
+        📧 Your email isn't verified yet. Check your inbox.
+      </div>
       <div class="welcome">
         <div class="avatar" id="av-letter">?</div>
         <h2 id="wlc-name">Welcome back!</h2>
@@ -439,30 +445,41 @@ html,body{
   </div>
 </div>
 
-<script>
-async function api(method, path, body) {
-  const res = await fetch('/api/auth' + path, {
-    method, credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = await res.json().catch(() => ({}));
-  return { ok: res.ok, data };
-}
+<script type="module">
+import { initializeApp }                        from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword,
+         sendEmailVerification, sendPasswordResetEmail, signOut,
+         onAuthStateChanged, GoogleAuthProvider, signInWithPopup, updateProfile }
+  from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
 
+// ── Firebase config ───────────────────────────────────────
+const firebaseConfig = {
+  apiKey:            "AIzaSyD2R1GPgLV5u6DQBrlkST_s6RTfGBDCOAs",
+  authDomain:        "yumiverse-221be.firebaseapp.com",
+  projectId:         "yumiverse-221be",
+  storageBucket:     "yumiverse-221be.firebasestorage.app",
+  messagingSenderId: "90481491400",
+  appId:             "1:90481491400:web:3c298fd6584031e63a94fd",
+  measurementId:     "G-79DPS11DSZ"
+};
+
+const app          = initializeApp(firebaseConfig);
+const auth         = getAuth(app);
+const googleProvider = new GoogleAuthProvider();
+
+// ── UI helpers ────────────────────────────────────────────
 const taglines = {
   login:  'Sign in to your account to continue',
   signup: 'Create a new account to get started',
   forgot: 'Reset your password',
-  reset:  'Choose a new password',
   home:   "You're logged in",
 };
 
-function showView(name) {
+window.showView = function(name) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.getElementById('view-' + name).classList.add('active');
   document.getElementById('tagline').textContent = taglines[name] || '';
-  ['login-alert','signup-alert','forgot-alert','reset-alert'].forEach(id => {
+  ['login-alert','signup-alert','forgot-alert'].forEach(id => {
     const el = document.getElementById(id);
     if (el) { el.className = 'alert'; el.textContent = ''; }
   });
@@ -482,7 +499,7 @@ function setErr(inputId, show) {
   input.classList.toggle('error', show);
   if (err) err.classList.toggle('show', show);
 }
-function clearErr(id) { setErr(id, false); }
+window.clearErr = id => setErr(id, false);
 
 function setLoading(btnId, spinId, loading) {
   const btn  = document.getElementById(btnId);
@@ -493,7 +510,7 @@ function setLoading(btnId, spinId, loading) {
 
 function validateEmail(e) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e); }
 
-function togglePw(inputId, iconId) {
+window.togglePw = function(inputId, iconId) {
   const i = document.getElementById(inputId), show = i.type === 'password';
   i.type = show ? 'text' : 'password';
   document.getElementById(iconId).innerHTML = show
@@ -501,7 +518,7 @@ function togglePw(inputId, iconId) {
     : `<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>`;
 }
 
-function checkStrength() {
+window.checkStrength = function() {
   const v = document.getElementById('su-pw').value;
   const fill = document.getElementById('str-fill');
   const label = document.getElementById('str-label');
@@ -522,28 +539,59 @@ function checkStrength() {
   label.style.color = lvl.color;
 }
 
+function friendlyError(code) {
+  const map = {
+    'auth/email-already-in-use':    'That email is already registered.',
+    'auth/invalid-email':           'Invalid email address.',
+    'auth/weak-password':           'Password must be at least 6 characters.',
+    'auth/user-not-found':          'Incorrect email or password.',
+    'auth/wrong-password':          'Incorrect email or password.',
+    'auth/invalid-credential':      'Incorrect email or password.',
+    'auth/too-many-requests':       'Too many attempts. Please try again later.',
+    'auth/popup-closed-by-user':    'Sign-in popup was closed.',
+    'auth/network-request-failed':  'Network error. Check your connection.',
+  };
+  return map[code] || 'Something went wrong. Please try again.';
+}
+
 function loadHome(user) {
-  document.getElementById('av-letter').textContent = user.username[0].toUpperCase();
-  document.getElementById('wlc-name').textContent  = 'Welcome, ' + user.username + '!';
-  document.getElementById('wlc-email').textContent = user.email;
+  const name   = user.displayName || user.email.split('@')[0];
+  const letter = name[0].toUpperCase();
+  document.getElementById('av-letter').textContent  = letter;
+  document.getElementById('wlc-name').textContent   = 'Welcome, ' + name + '!';
+  document.getElementById('wlc-email').textContent  = user.email;
+  // Show a banner if email not yet verified
+  const verifyBanner = document.getElementById('verify-banner');
+  if (verifyBanner) verifyBanner.style.display = user.emailVerified ? 'none' : 'block';
   showView('home');
 }
 
-async function doLogin() {
-  const identifier = document.getElementById('login-id').value.trim();
-  const password   = document.getElementById('login-pw').value;
+// ── Auth actions ──────────────────────────────────────────
+window.doLogin = async function() {
+  const email    = document.getElementById('login-id').value.trim();
+  const password = document.getElementById('login-pw').value;
   let valid = true;
-  if (!identifier) { setErr('login-id', true); valid = false; }
-  if (!password)   { setErr('login-pw', true); valid = false; }
+  if (!email)    { setErr('login-id', true); valid = false; }
+  if (!password) { setErr('login-pw', true); valid = false; }
   if (!valid) return;
   setLoading('btn-login', 'spin-login', true);
-  const { ok, data } = await api('POST', '/login', { identifier, password });
+  try {
+    const { user } = await signInWithEmailAndPassword(auth, email, password);
+    if (!user.emailVerified) {
+      await signOut(auth);
+      showAlert('login-alert', 'danger', 'Please verify your email before signing in. Check your inbox.');
+      document.getElementById('resend-row').style.display = 'block';
+      setLoading('btn-login', 'spin-login', false);
+      return;
+    }
+    loadHome(user);
+  } catch (e) {
+    showAlert('login-alert', 'danger', friendlyError(e.code));
+  }
   setLoading('btn-login', 'spin-login', false);
-  if (!ok) { showAlert('login-alert', 'danger', data.error || 'Sign in failed.'); return; }
-  loadHome(data.user);
 }
 
-async function doSignup() {
+window.doSignup = async function() {
   const username = document.getElementById('su-username').value.trim();
   const email    = document.getElementById('su-email').value.trim();
   const pw       = document.getElementById('su-pw').value;
@@ -555,55 +603,80 @@ async function doSignup() {
   if (pw !== pw2)                                    { setErr('su-pw2', true);      valid = false; }
   if (!valid) return;
   setLoading('btn-signup', 'spin-signup', true);
-  const { ok, data } = await api('POST', '/register', { username, email, password: pw });
+  try {
+    const { user } = await createUserWithEmailAndPassword(auth, email, pw);
+    await updateProfile(user, { displayName: username });
+    await sendEmailVerification(user);
+    await signOut(auth);
+    showView('login');
+    showAlert('login-alert', 'success', 'Account created! Check your email to verify before signing in.');
+  } catch (e) {
+    showAlert('signup-alert', 'danger', friendlyError(e.code));
+  }
   setLoading('btn-signup', 'spin-signup', false);
-  if (!ok) { showAlert('signup-alert', 'danger', data.error || 'Sign up failed.'); return; }
-  loadHome(data.user);
 }
 
-async function doForgot() {
+window.doForgot = async function() {
   const email = document.getElementById('forgot-email').value.trim();
   if (!validateEmail(email)) { setErr('forgot-email', true); return; }
   setLoading('btn-forgot', 'spin-forgot', true);
-  const { ok, data } = await api('POST', '/forgot-password', { email });
+  try {
+    await sendPasswordResetEmail(auth, email);
+    showAlert('forgot-alert', 'success', 'If that email is registered, a reset link has been sent.');
+    document.getElementById('forgot-email').value = '';
+  } catch (e) {
+    // Always show success to prevent email enumeration
+    showAlert('forgot-alert', 'success', 'If that email is registered, a reset link has been sent.');
+  }
   setLoading('btn-forgot', 'spin-forgot', false);
-  if (!ok) { showAlert('forgot-alert', 'danger', data.error || 'Something went wrong.'); return; }
-  showAlert('forgot-alert', 'success', 'If that email is registered, a reset link has been sent.');
-  document.getElementById('forgot-email').value = '';
 }
 
-async function doReset() {
-  const pw    = document.getElementById('reset-pw').value;
-  const pw2   = document.getElementById('reset-pw2').value;
-  const token = new URLSearchParams(window.location.search).get('token');
-  if (pw.length < 8) { setErr('reset-pw', true);  return; }
-  if (pw !== pw2)    { setErr('reset-pw2', true);  return; }
-  if (!token)        { showAlert('reset-alert', 'danger', 'Invalid reset link.'); return; }
-  setLoading('btn-reset', 'spin-reset', true);
-  const { ok, data } = await api('POST', '/reset-password', { token, password: pw });
-  setLoading('btn-reset', 'spin-reset', false);
-  if (!ok) { showAlert('reset-alert', 'danger', data.error || 'Reset failed.'); return; }
-  window.history.replaceState({}, '', '/');
-  loadHome(data.user);
-}
-
-async function doLogout() {
-  await api('POST', '/logout');
+window.doLogout = async function() {
+  await signOut(auth);
   ['login-id','login-pw','su-username','su-email','su-pw','su-pw2','forgot-email'].forEach(id => {
     const el = document.getElementById(id); if (el) el.value = '';
   });
   showView('login');
 }
 
-function socialLogin(provider) {
-  showAlert('login-alert', 'danger', provider + ' OAuth requires additional setup.');
+window.doResendVerification = async function() {
+  const email    = document.getElementById('login-id').value.trim();
+  const password = document.getElementById('login-pw').value;
+  if (!email || !password) {
+    showAlert('login-alert', 'danger', 'Enter your email and password to resend the verification link.');
+    return;
+  }
+  try {
+    const { user } = await signInWithEmailAndPassword(auth, email, password);
+    if (!user.emailVerified) {
+      await sendEmailVerification(user);
+      showAlert('login-alert', 'success', 'Verification email resent! Check your inbox.');
+    }
+    await signOut(auth);
+  } catch (e) {
+    showAlert('login-alert', 'danger', friendlyError(e.code));
+  }
 }
 
-(async function init() {
-  if (window.location.search.includes('token=')) { showView('reset'); return; }
-  const { ok, data } = await api('GET', '/me');
-  if (ok) { loadHome(data.user); } else { showView('login'); }
-})();
+window.socialLogin = async function(provider) {
+  try {
+    if (provider === 'Google') {
+      const { user } = await signInWithPopup(auth, googleProvider);
+      loadHome(user);
+    }
+  } catch (e) {
+    showAlert('login-alert', 'danger', friendlyError(e.code));
+  }
+}
+
+// ── Boot ──────────────────────────────────────────────────
+onAuthStateChanged(auth, user => {
+  if (user && user.emailVerified) {
+    loadHome(user);
+  } else {
+    showView('login');
+  }
+});
 </script>
 </body>
 </html>
